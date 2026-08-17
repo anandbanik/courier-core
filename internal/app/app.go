@@ -12,6 +12,8 @@ import (
 	"courier-core/internal/config"
 	"courier-core/internal/flow"
 	"courier-core/internal/httpserver"
+	"courier-core/internal/transform"
+	"courier-core/internal/transform/custom"
 	"courier-core/internal/transport"
 	"courier-core/internal/transport/api"
 	"courier-core/internal/transport/kafka"
@@ -37,7 +39,10 @@ func New(ctx context.Context, cfgPath string, log *slog.Logger) (*App, error) {
 	sqs.Register(reg)
 	s3transport.Register(reg)
 
-	mgr, err := flow.BuildManager(ctx, cfg, reg, log)
+	treg := transform.NewRegistry()
+	custom.Register(treg)
+
+	mgr, err := flow.BuildManager(ctx, cfg, reg, treg, log)
 	if err != nil {
 		return nil, fmt.Errorf("app: build manager: %w", err)
 	}

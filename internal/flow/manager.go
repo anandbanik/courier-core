@@ -19,9 +19,12 @@ type Manager struct {
 }
 
 // BuildManager iterates cfg.AllFlows() and constructs a Flow for each,
-// building its source, sink, transform chain, and dead-letter writer via the
-// registry. Any error aborts BuildManager immediately (fail-fast startup).
-func BuildManager(ctx context.Context, cfg *config.Config, reg *transport.Registry, log *slog.Logger) (*Manager, error) {
+// building its source and sink via reg, its transform chain via treg, and its
+// dead-letter writer. Any error aborts BuildManager immediately (fail-fast
+// startup) — including an unknown transform type, which is caught here rather
+// than during config validation.
+func BuildManager(ctx context.Context, cfg *config.Config, reg *transport.Registry,
+	treg *transform.Registry, log *slog.Logger) (*Manager, error) {
 	m := &Manager{log: log}
 
 	for _, fc := range cfg.AllFlows() {
@@ -33,7 +36,7 @@ func BuildManager(ctx context.Context, cfg *config.Config, reg *transport.Regist
 		if err != nil {
 			return nil, err
 		}
-		tr, err := transform.BuildChain(fc.TransformChain())
+		tr, err := treg.BuildChain(fc.TransformChain())
 		if err != nil {
 			return nil, err
 		}

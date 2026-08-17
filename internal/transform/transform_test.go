@@ -10,7 +10,7 @@ import (
 )
 
 func TestBuildNilIsPassthrough(t *testing.T) {
-	tr, err := Build(nil)
+	tr, err := NewRegistry().Build(nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -20,14 +20,14 @@ func TestBuildNilIsPassthrough(t *testing.T) {
 }
 
 func TestBuildUnknownType(t *testing.T) {
-	_, err := Build(&config.TransformConfig{Type: "nope"})
+	_, err := NewRegistry().Build(&config.TransformConfig{Type: "nope"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestTemplateTransform(t *testing.T) {
-	tr, err := Build(&config.TransformConfig{
+	tr, err := NewRegistry().Build(&config.TransformConfig{
 		Type:   "template",
 		Params: map[string]string{"template": `hello {{.Body.name}}`},
 	})
@@ -46,14 +46,14 @@ func TestTemplateTransform(t *testing.T) {
 }
 
 func TestTemplateTransformMissingTemplate(t *testing.T) {
-	_, err := Build(&config.TransformConfig{Type: "template"})
+	_, err := NewRegistry().Build(&config.TransformConfig{Type: "template"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestJQIdentity(t *testing.T) {
-	tr, err := Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "."}})
+	tr, err := NewRegistry().Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "."}})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestJQIdentity(t *testing.T) {
 }
 
 func TestJQFieldExtraction(t *testing.T) {
-	tr, err := Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": ".x"}})
+	tr, err := NewRegistry().Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": ".x"}})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestJQFieldExtraction(t *testing.T) {
 }
 
 func TestJQReshape(t *testing.T) {
-	tr, err := Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "{a:.x}"}})
+	tr, err := NewRegistry().Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "{a:.x}"}})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestJQReshape(t *testing.T) {
 }
 
 func TestJQPreservesHeadersIDMetadata(t *testing.T) {
-	tr, err := Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": ".x"}})
+	tr, err := NewRegistry().Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": ".x"}})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -121,21 +121,21 @@ func TestJQPreservesHeadersIDMetadata(t *testing.T) {
 }
 
 func TestJQMissingExpression(t *testing.T) {
-	_, err := Build(&config.TransformConfig{Type: "jq"})
+	_, err := NewRegistry().Build(&config.TransformConfig{Type: "jq"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestJQInvalidExpression(t *testing.T) {
-	_, err := Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "..."}})
+	_, err := NewRegistry().Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "..."}})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestJQNonJSONBody(t *testing.T) {
-	tr, err := Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "."}})
+	tr, err := NewRegistry().Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "."}})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestJQNonJSONBody(t *testing.T) {
 }
 
 func TestJQNoOutput(t *testing.T) {
-	tr, err := Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "empty"}})
+	tr, err := NewRegistry().Build(&config.TransformConfig{Type: "jq", Params: map[string]string{"expression": "empty"}})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestJQNoOutput(t *testing.T) {
 }
 
 func TestBuildChainNilIsPassthrough(t *testing.T) {
-	tr, err := BuildChain(nil)
+	tr, err := NewRegistry().BuildChain(nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestBuildChainNilIsPassthrough(t *testing.T) {
 }
 
 func TestBuildChainSingleEntryNotWrapped(t *testing.T) {
-	tr, err := BuildChain([]*config.TransformConfig{{Type: "jq", Params: map[string]string{"expression": "."}}})
+	tr, err := NewRegistry().BuildChain([]*config.TransformConfig{{Type: "jq", Params: map[string]string{"expression": "."}}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestBuildChainSingleEntryNotWrapped(t *testing.T) {
 }
 
 func TestBuildChainMultipleEntriesThreaded(t *testing.T) {
-	tr, err := BuildChain([]*config.TransformConfig{
+	tr, err := NewRegistry().BuildChain([]*config.TransformConfig{
 		{Type: "jq", Params: map[string]string{"expression": "{a:.x}"}},
 		{Type: "jq", Params: map[string]string{"expression": "{b:.a}"}},
 	})
@@ -197,7 +197,7 @@ func TestBuildChainMultipleEntriesThreaded(t *testing.T) {
 }
 
 func TestBuildChainErrorPropagatesFromConstruction(t *testing.T) {
-	_, err := BuildChain([]*config.TransformConfig{
+	_, err := NewRegistry().BuildChain([]*config.TransformConfig{
 		{Type: "jq", Params: map[string]string{"expression": "."}},
 		{Type: "nope"},
 	})

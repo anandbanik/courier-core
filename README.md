@@ -144,16 +144,88 @@ useful for bulk reprocessing.
 
 ## Transforms
 
+Three transforms are built in:
+
 | Type | Params | Behaviour |
 | --- | --- | --- |
 | `passthrough` | — | Returns the message unchanged. The default when none is configured. |
 | `jq` | `expression` | Runs a [gojq](https://github.com/itchyny/gojq) query. JSON in, JSON out. |
 | `template` | `template` | Renders a Go `text/template` over `{{.Body}}` and `{{.Headers}}`. |
 
-Both real transforms compile their program at startup, so a malformed
+`jq` and `template` compile their program at startup, so a malformed
 expression fails the process at boot rather than on the first message. In a
 chain, each transform's output feeds the next; the last one's output goes to the
-sink.
+sink. Use `transform:` (singular) for one, `transforms:` for a chain — setting
+both is rejected, and an unknown `type` fails at startup rather than per
+message.
+
+### Custom transforms
+
+A transform can also be compiled Go living in
+[`internal/transform/custom`](internal/transform/custom) — no interpreter, full
+type safety, normal `go test`. Changing one requires a rebuild.
+
+[`docs/custom-transforms.md`](docs/custom-transforms.md) is a step-by-step
+tutorial that assumes only beginner-level Go. The summary below is the quick
+reference.
+
+1. Implement `transform.Transform` in `internal/transform/custom`. Copy
+   [`enrich.go`](internal/transform/custom/enrich.go) as a starting point:
+
+   ```go
+   func (t *myTransform) Apply(ctx context.Context, in *message.Message) (*message.Message, error) {
+       out := *in            // copy: preserves ID, Headers, and Metadata
+       out.Body = newBody
+       return &out, nil
+   }
+   ```
+
+   Two conventions matter. Validate config in the **factory**, not in `Apply`,
+   so a bad flow definition fails at startup. And **copy the message struct**
+   rather than mutating the input — that is what preserves `ID`, `Headers`, and
+   the `Ack`/`Nack` hooks the flow relies on for at-least-once delivery.
+
+2. Register it under the name flows will use as their config `type`, in
+   [`custom.go`](internal/transform/custom/custom.go):
+
+   ```go
+   func Register(r *transform.Registry) {
+       r.Register("enrich", newEnrich)
+       r.Register("myTransform", newMyTransform)
+   }
+   ```
+
+   Registering a name twice panics at startup, so a custom transform cannot
+   silently shadow a built-in.
+
+3. Reference it from a flow. Built-in and custom transforms mix freely, and
+   each flow builds its own instances from its own `params`:
+
+   ```yaml
+   transforms:
+     - type: jq
+       params:
+         expression: "{id: .orderId, qty: .quantity}"
+     - type: myTransform
+       params:
+         someKey: someValue
+   ```
+
+Registration is wired in [`internal/app`](internal/app/app.go), the composition
+root for both `cmd/service` and `cmd/lambda`, so a transform registered once is
+available to both.
+
+`configs/example.yaml` ships an `enrichedOrders` flow chaining `jq` into
+`enrich`. With a listener on port 9000:
+
+```bash
+EIP_CONFIG=configs/example.yaml go run ./cmd/service
+curl -XPOST localhost:8080/api/v1/enrichedOrders -d '{"orderId":"A1","quantity":3}'
+```
+
+**Known limitation**: `params` is `map[string]string`, so a transform needing
+nested or typed config must encode it into a string (e.g. a JSON blob in one
+param).
 
 ## Reliability
 
@@ -227,12 +299,16 @@ root both share. `internal/flow` is the engine, `internal/transport/*` the
 transports, `internal/transform` the transforms, and `internal/config` the YAML
 model and validation.
 
-Adding a transport means implementing the interfaces in
-`internal/transport/transport.go` and registering a factory — no changes to the
-engine.
+Both transports and transforms are registry-driven. Adding a transport means
+implementing the interfaces in `internal/transport/transport.go` and registering
+a factory; adding a transform means implementing `transform.Transform` and
+registering it in `internal/transform/custom`. Neither requires changes to the
+engine — only a line in `internal/app`, the shared composition root.
 
 ## Documentation
 
 - [`docs/architecture.md`](docs/architecture.md) — low-level design: abstractions,
   control flow, delivery semantics, and per-transport behaviour.
+- [`docs/custom-transforms.md`](docs/custom-transforms.md) — tutorial for writing
+  a custom transform, assuming only beginner-level Go.
 - [`CLAUDE.md`](CLAUDE.md) — repository guidance for Claude Code.

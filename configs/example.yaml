@@ -31,6 +31,30 @@ flows:
         region: "us-east-1"
         endpoint: "http://localhost:9324"
 
+  # POST /api/v1/enrichedOrders -> HTTP POST to a downstream, through a chain
+  # of a built-in transform and a custom one. jq reshapes the payload first,
+  # then "enrich" (Go code in internal/transform/custom) merges in static
+  # fields plus the flow name and message id. Each entry's output feeds the
+  # next; the last entry's output goes to the sink.
+  - name: enrichedOrders
+    version: v1
+    source:
+      transport: api
+    transforms:
+      - type: jq
+        params:
+          expression: "{id: .orderId, qty: .quantity}"
+      - type: enrich
+        params:
+          source: courier
+          env: prod
+    sink:
+      transport: api
+      api:
+        url: "http://localhost:9000/downstream"
+        method: POST
+        timeoutSeconds: 10
+
   # POST /api/v1/echo -> HTTP POST to a downstream (no brokers needed; good for
   # a first end-to-end smoke test).
   - name: echo

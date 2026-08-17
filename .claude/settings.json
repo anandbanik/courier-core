@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gofmt -l .)",
+      "Bash(go build *)",
+      "Bash(gofmt -d internal/transform/custom/custom.go internal/transform/transform.go)",
+      "Bash(gofmt -w internal/transform/transform.go)",
+      "Bash(go vet *)",
+      "Bash(go test *)",
+      "Bash(gofmt -l internal/transform/custom/)"
+    ]
+  }
+}
