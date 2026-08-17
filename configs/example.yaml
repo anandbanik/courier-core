@@ -1,0 +1,105 @@
+server:
+  addr: ":8080"
+  apiPrefix: "/api"
+  shutdownTimeout: 15s
+
+# flows: primarily API-sourced standalone endpoints.
+flows:
+  # POST /api/v1/ingestOrders -> Kafka topic "orders"
+  - name: ingestOrders
+    version: v1
+    source:
+      transport: api
+    transform:
+      type: passthrough
+    sink:
+      transport: kafka
+      kafka:
+        brokers: ["localhost:9092"]
+        topic: orders
+        requiredAcks: all
+
+  # POST /api/v1/echoToSqs -> SQS queue
+  - name: echoToSqs
+    version: v1
+    source:
+      transport: api
+    sink:
+      transport: sqs
+      sqs:
+        queueUrl: "http://localhost:9324/000000000000/inbound"
+        region: "us-east-1"
+        endpoint: "http://localhost:9324"
+
+  # POST /api/v1/echo -> HTTP POST to a downstream (no brokers needed; good for
+  # a first end-to-end smoke test).
+  - name: echo
+    version: v1
+    source:
+      transport: api
+    sink:
+      transport: api
+      api:
+        url: "http://localhost:9000/downstream"
+        method: POST
+        timeoutSeconds: 10
+
+# routes: a pull source piped to a sink.
+routes:
+  # Kafka topic "events" -> HTTP POST. GET status, POST triggers one poll.
+  - name: kafkaToHttp
+    version: v1
+    source:
+      transport: kafka
+      kafka:
+        brokers: ["localhost:9092"]
+        topic: events
+        groupId: courier-core-events
+    sink:
+      transport: api
+      api:
+        url: "http://localhost:9000/downstream"
+        method: POST
+        timeoutSeconds: 10
+        headers:
+          content-type: application/json
+
+  # SQS queue -> Kafka topic bridge.
+  - name: sqsToKafka
+    version: v1
+    source:
+      transport: sqs
+      sqs:
+        queueUrl: "http://localhost:9324/000000000000/bridge"
+        region: "us-east-1"
+        endpoint: "http://localhost:9324"
+        waitTimeSeconds: 20
+        maxMessages: 10
+    sink:
+      transport: kafka
+      kafka:
+        brokers: ["localhost:9092"]
+        topic: bridged
+
+  # S3 prefix -> HTTP POST, on-demand only (no background poll loop).
+  # POST /api/v1/s3Reprocess scans every unprocessed object under the prefix
+  # and delivers each through the pipeline; GET returns status.
+  - name: s3Reprocess
+    version: v1
+    source:
+      transport: s3
+      s3:
+        bucket: my-inbox-bucket
+        region: us-east-1
+        prefix: inbox/
+        processedPrefix: processed/
+        maxKeys: 500          # ListObjectsV2 page size; default 1000
+        apiTrigger:
+          enabled: true        # POST performs an uncapped scan of the prefix
+          disablePollLoop: true # skip the 30s background loop; REST-only (cmd/service)
+    sink:
+      transport: api
+      api:
+        url: "http://localhost:9000/downstream"
+        method: POST
+        timeoutSeconds: 10

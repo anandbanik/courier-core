@@ -1,0 +1,81 @@
+server:
+  addr: ":8080"
+  apiPrefix: "/api"
+
+routes:
+  - name: onestreamMock
+    version: v1
+    source:
+      transport: api
+    sink:
+      transport: sqs
+      sqs:
+        queueUrl: "http://localhost:4566/000000000000/onestream"
+        region: "us-east-1"
+        endpoint: "http://floci:4566"
+
+  - name: onestreamFlow
+    version: v1
+    lambdaTrigger:
+      sqsQueueArn: "arn:aws:sqs:us-east-1:000000000000:onestream"
+    source:
+      transport: sqs
+      sqs:
+        queueUrl: "http://localhost:4566/000000000000/onestream"
+        region: "us-east-1"
+        waitTimeSeconds: 20
+        maxMessages: 10
+    sink:
+      transport: api
+      api:
+        url: "https://api-sdp-it.cloud.capitalone.com/internal-operations/developer-platform/stream-management/submit-dat"
+        method: POST
+        timeoutSeconds: 30
+        headers:
+          content-type: application/json
+          accept: application/json;v=1
+        oauth:
+          tokenUrl: "https://api-it.cloud.capitalone.com/oauth2/token"
+          clientId: "bfda0dc0c03d4d81a0199d0f523325b7"
+          clientSecret: ${ONESTREAM_CLIENT_SECRET}
+    retry:
+      maxAttempts: 3
+    deadLetter:
+      stopOnFailure: false   # true = stop the pull loop if the S3 write fails
+      s3:
+        bucket: onestream-dlt
+        region: us-east-1
+        prefix: ca-fulfillment/      # optional key prefix; key = {prefix}{flow}/{msg.ID}.json
+        dateLayout: "2006-01-02"  # optional date layout for prefix; default = "2006/01/02"
+        endpoint: "http://floci:4566"
+
+  - name: onestreamReprocess
+    version: v1
+    lambdaTrigger:
+      s3Bucket: onestream-dlt
+    source:
+        transport: s3
+        s3:
+          bucket: onestream-dlt
+          region: us-east-1
+          prefix: ca-fulfillment/
+          processedPrefix: processed/
+          pollIntervalSeconds: 60
+          endpoint: "http://floci:4566"
+    transform:
+      type: jq
+      params:
+        expression: '.body'
+    sink:
+      transport: api
+      api:
+        url: "https://api-sdp-it.cloud.capitalone.com/internal-operations/developer-platform/stream-management/submit-data"
+        method: POST
+        timeoutSeconds: 30
+        headers:
+          content-type: application/json
+          accept: application/json;v=1
+        oauth:
+          tokenUrl: "https://api-it.cloud.capitalone.com/oauth2/token"
+          clientId: "bfda0dc0c03d4d81a0199d0f523325b7"
+          clientSecret: ${ONESTREAM_CLIENT_SECRET}
