@@ -4,8 +4,8 @@ Internal design reference for the courier-core component: its abstractions,
 control flow, delivery semantics, and the behaviours that are easy to get wrong.
 
 Audience: engineers modifying or operating this service. For a task-oriented
-guide to adding transformation logic, see the source of
-[`internal/transform`](../internal/transform/).
+guide to adding transformation logic, see
+[`custom-transforms.md`](custom-transforms.md).
 
 ---
 
@@ -64,7 +64,7 @@ require touching the flow engine.
 
 ```
 cmd/service ─┐
-             ├─▶ internal/app ──▶ internal/flow ──▶ internal/transform
+             ├─▶ internal/app ──▶ internal/flow ──▶ internal/transform ──▶ .../custom
 cmd/lambda ──┘        │               │        └──▶ internal/transport ──▶ .../api
                       │               │        └──▶ internal/deadletter        .../kafka
                       │               │                                        .../sqs
@@ -81,7 +81,8 @@ cmd/lambda ──┘        │               │        └──▶ internal/t
 | [`internal/message`](../internal/message/) | The `Message` type. Depends on nothing. |
 | [`internal/transport`](../internal/transport/) | `Source`/`Sink` interfaces and the transport registry. |
 | [`internal/transport/{api,kafka,sqs,s3}`](../internal/transport/) | Concrete transports, each self-registering. |
-| [`internal/transform`](../internal/transform/) | `Transform` interface, chain, and built-in transforms. |
+| [`internal/transform`](../internal/transform/) | `Transform` interface, chain, the transform registry, and built-in transforms. |
+| [`internal/transform/custom`](../internal/transform/custom/) | Project-specific transforms, registered onto the transform registry. |
 | [`internal/flow`](../internal/flow/) | The engine: `Flow`, `Manager`, the pipeline, retry policy. |
 | [`internal/deadletter`](../internal/deadletter/) | `Writer` interface and the S3 implementation. |
 | [`internal/httpserver`](../internal/httpserver/) | Mux construction and per-flow route registration. |
@@ -95,6 +96,9 @@ Two rules keep the graph acyclic and are worth preserving:
   transform-type and transport-kind validation happens at *build* time in
   `BuildManager`, not in `config.Validate` — see
   [§15](#15-design-notes-and-sharp-edges).
+- `transform/custom` imports `transform`, never the reverse. The registry lives
+  in the parent package so custom transforms depend on the interface, not the
+  other way round.
 
 ---
 
@@ -231,11 +235,14 @@ a port.
 2. transport.NewRegistry()
      └─ api.Register / kafka.Register / sqs.Register / s3transport.Register
 
-3. flow.BuildManager(ctx, cfg, reg, log)
+   transform.NewRegistry()      passthrough / template / jq pre-registered
+     └─ custom.Register         project-specific transforms, e.g. "enrich"
+
+3. flow.BuildManager(ctx, cfg, reg, treg, log)
      └─ for each cfg.AllFlows():
           reg.BuildSource      ─┐
           reg.BuildSink         │  any error → abort startup
-          transform.BuildChain  │
+          treg.BuildChain       │
           deadletter.Build     ─┘
           newRetryPolicy
           flow.New(...)
@@ -250,6 +257,15 @@ step 2 rather than via `init()`. Each transport package exposes a one-line
 `Register` ([example](../internal/transport/api/register.go)); the S3 package
 registers only a source, which is how "S3 is source-only" is expressed in code
 as well as in validation.
+
+**Transform registration** mirrors it
+([`registry.go`](../internal/transform/registry.go)): a `map[string]Factory`
+keyed by the config `type`, with `passthrough`, `template`, and `jq` present
+from `NewRegistry` and project-specific ones added by
+[`custom.Register`](../internal/transform/custom/custom.go). One deliberate
+difference from the transport registry: a duplicate name **panics** rather than
+overwriting, so a custom transform cannot silently shadow a built-in. Both
+registries are instance-based, so a test can build its own.
 
 **Route paths** are `cfg.Server.APIPrefix + "/" + version + "/" + name`, e.g.
 `/api/v1/ingestOrders`. Uniqueness is enforced on `version + "/" + name`.
@@ -479,8 +495,9 @@ Useful for on-demand bulk reprocessing.
 
 ## 9. Transform subsystem
 
-Three built-ins, resolved by `Build`
-([`transform.go`](../internal/transform/transform.go)):
+Transforms are resolved by type name through `transform.Registry`
+([`registry.go`](../internal/transform/registry.go)). Three are built in, present
+from `NewRegistry`:
 
 | Type | Implementation | Params |
 | --- | --- | --- |
@@ -488,7 +505,7 @@ Three built-ins, resolved by `Build`
 | `template` | Go `text/template` over `{Body, Headers}` | `template` (required) |
 | `jq` | `gojq` query, JSON in → JSON out | `expression` (required) |
 
-Both real transforms compile their program **at startup** (`template.Parse`,
+`template` and `jq` compile their program **at startup** (`template.Parse`,
 `gojq.Parse`) and store the compiled artifact, so per-message work is just
 execution. Config errors therefore surface at boot.
 
@@ -510,9 +527,9 @@ func (c chain) Apply(ctx context.Context, in *message.Message) (*message.Message
 }
 ```
 
-`BuildChain` optimizes the shapes: zero entries → `Passthrough`; **one entry →
-that transform directly, with no `chain` wrapper**; many → a `chain`. The error
-wrapper adds the failing transform's index.
+`Registry.BuildChain` optimizes the shapes: zero entries → `Passthrough`; **one
+entry → that transform directly, with no `chain` wrapper**; many → a `chain`.
+The error wrapper adds the failing transform's index.
 
 Config resolution order is `transforms` (list) > `transform` (singular) > nil,
 via `FlowConfig.TransformChain()`. Setting both is a validation error.
@@ -537,6 +554,26 @@ transform that writes headers also mutates the input's.
 
 `Passthrough` returns the same pointer, which is safe precisely because it
 changes nothing.
+
+### Custom transforms
+
+Anything beyond the built-ins is compiled Go in
+[`internal/transform/custom`](../internal/transform/custom/), added to the
+registry by that package's `Register`. A `Factory` builds one instance per flow
+from that flow's `params`:
+
+```go
+type Factory func(params map[string]string) (Transform, error)
+```
+
+Validation belongs in the factory rather than in `Apply`, so a bad flow
+definition fails at startup like every other config error.
+[`enrich.go`](../internal/transform/custom/enrich.go) is the reference
+implementation, and [`custom-transforms.md`](custom-transforms.md) is the
+step-by-step guide. Built-in and custom transforms mix freely in one chain.
+
+Known limitation: `params` is `map[string]string`, so a transform needing nested
+or typed config must encode it into a string.
 
 ---
 
@@ -663,8 +700,9 @@ sink url); incomplete OAuth; negative `maxKeys`; `apiTrigger.disablePollLoop`
 without `apiTrigger.enabled`; and a `deadLetter` block with no `s3` target.
 
 It does **not** validate transform types — that would require importing
-`transform` from `config`, inverting the dependency. Unknown types are caught
-moments later in `BuildManager`, still at startup.
+`transform` from `config`, inverting the dependency. An unknown type is caught
+moments later by `Registry.Build` inside `BuildManager`, still at startup, as
+`unknown transform type %q`.
 
 `S3Config` is reused for three roles (S3 source, dead-letter target, Lambda S3
 adapter), each using a different subset of its fields.
@@ -725,8 +763,9 @@ anything:
    lose an acknowledgement.
 6. **The SQS sink drops headers** — body only.
 7. **The API sink's response is a new `Message`** with a new `ID`.
-8. **A single-entry transform chain is not wrapped**, so `BuildChain` can return
-   a `*jqTransform` rather than a `chain`. Type-asserting on `chain` is unsafe.
+8. **A single-entry transform chain is not wrapped**, so `Registry.BuildChain`
+   can return a `*jqTransform` rather than a `chain`. Type-asserting on `chain`
+   is unsafe.
 9. **`Passthrough` returns the input pointer**, unlike every other transform.
 10. **The struct copy in transforms is shallow** — `Headers` is shared with the
     input.
@@ -735,9 +774,10 @@ anything:
 13. **Transform types are validated in `BuildManager`, not `config.Validate`**,
     to keep the `config ← transform` dependency one-directional.
 14. **No hot reload.** Config is read once at startup.
-15. **Adding a transform type means editing a `switch`** in
-    [`transform.go`](../internal/transform/transform.go) — unlike transports,
-    which are registry-driven and extensible without touching core files.
+15. **Registering a transform name twice panics**, unlike `transport.Registry`,
+    whose `RegisterSource` silently overwrites. Registration happens only at
+    startup, so this fails the process rather than a request — the trade is a
+    loud failure over a custom transform quietly shadowing `jq`.
 
 ### Testing
 
@@ -745,7 +785,9 @@ Tests are standard library `testing`, table-driven where it helps, colocated
 with the code. `internal/flow` and `internal/lambda` use hand-written mock
 sources and sinks rather than a mocking framework — `flow.NewWithRetryConfig`
 exists specifically so tests outside the package can build a `*Flow` from mocks
-without going through `BuildManager`.
+without going through `BuildManager`. Because the transform registry is
+instance-based, `registry_test.go` builds its own and registers a local
+`suffixTransform` to assert chain ordering and factory-error propagation.
 
 `deployments/docker-compose.yaml` provides local Kafka and an AWS emulator for
 manual end-to-end testing.

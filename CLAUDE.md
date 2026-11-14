@@ -66,13 +66,18 @@ a `nil` error means "handled, don't retry").
 
 **Import graph rules.** `internal/message` imports nothing internal.
 `internal/config` is imported by `transform` and `transport`, never the reverse
-— which is why unknown transform types are caught in `flow.BuildManager` rather
-than `config.Validate`. Preserve this direction.
+— which is why unknown transform types are caught in `flow.BuildManager` (via
+`transform.Registry.Build`) rather than `config.Validate`. Preserve this
+direction; `internal/transform/custom` imports `internal/transform`, never the
+reverse.
 
-**Extending.** Transports are registry-driven: implement the interfaces in
-`internal/transport/transport.go` and add a `Register` function, no core edits.
-Transforms are *not* — adding one means editing the `switch` in
-`transform.Build`.
+**Extending.** Both transports and transforms are registry-driven, and neither
+requires core edits. For a transport, implement the interfaces in
+`internal/transport/transport.go` and add a `Register` function. For a transform,
+implement `transform.Transform` in `internal/transform/custom` and add a line to
+that package's `Register` — see `docs/custom-transforms.md`, with
+`internal/transform/custom/enrich.go` as the worked example. Both registries are
+instance-based and populated explicitly in `internal/app`, not via `init()`.
 
 ## Gotchas
 
@@ -88,8 +93,12 @@ These are correct but surprising, and each has cost time before:
   `message.Message` silently drops the `Ack`/`Nack` closures and breaks
   at-least-once delivery with no compile error. The copy is shallow, so
   `Headers` still aliases the input's map.
-- **`BuildChain` does not wrap a single entry**, so it can return a
+- **`Registry.BuildChain` does not wrap a single entry**, so it can return a
   `*jqTransform` rather than a `chain`. Type-asserting on `chain` is unsafe.
+- **Registering a transform name twice panics**, deliberately, so a custom
+  transform cannot silently shadow a built-in like `jq`. This is the one place
+  the transform registry differs from `transport.Registry`, whose
+  `RegisterSource` overwrites instead.
 - **Transform errors do not `Nack`**; only sink errors do. No transport
   currently sets `Nack` at all — redelivery relies on uncommitted offsets,
   visibility timeouts, or objects left in place.
